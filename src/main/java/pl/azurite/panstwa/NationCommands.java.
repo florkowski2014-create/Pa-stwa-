@@ -1,0 +1,260 @@
+package pl.azurite.panstwa;
+
+import org.bukkit.Bukkit;
+import org.bukkit.entity.Player;
+import pl.azurite.panstwa.Store.Nation;
+import pl.azurite.panstwa.Store.Town;
+
+import java.util.HashMap;
+import java.util.Locale;
+import java.util.Map;
+import java.util.stream.Collectors;
+
+/** Komendy państw i wojny: /p panstwo ... oraz /p wojna ... */
+public class NationCommands {
+
+    private static final String PREFIX = "§6[Państwa] §f";
+
+    private final PanstwaPlugin plugin;
+    private final Store st;
+    private final Map<String, String> nationInvites = new HashMap<>();  // klucz miasta -> nazwa państwa
+
+    public NationCommands(PanstwaPlugin plugin) {
+        this.plugin = plugin;
+        this.st = plugin.store;
+    }
+
+    private void msg(Player p, String s) {
+        p.sendMessage(PREFIX + s);
+    }
+
+    private Town mayorTown(Player p) {
+        Town t = st.townOf(p.getUniqueId());
+        if (t == null) {
+            msg(p, "§cNie masz miasta.");
+            return null;
+        }
+        if (!t.mayor.equals(p.getUniqueId())) {
+            msg(p, "§cTylko burmistrz może to zrobić.");
+            return null;
+        }
+        return t;
+    }
+
+    private Nation leaderNation(Player p) {
+        Town t = mayorTown(p);
+        if (t == null) return null;
+        Nation n = st.nationOf(t);
+        if (n == null) {
+            msg(p, "§cTwoje miasto nie należy do żadnego państwa.");
+            return null;
+        }
+        if (!n.capital.equalsIgnoreCase(t.name)) {
+            msg(p, "§cTylko burmistrz stolicy państwa może to zrobić.");
+            return null;
+        }
+        return n;
+    }
+
+    private void removeNation(Nation n) {
+        plugin.war.cancelFor(n.name);
+        st.deleteNation(n);
+    }
+
+    // ---------- państwa ----------
+
+    void nation(Player p, String[] a) {
+        if (a.length < 2) {
+            msg(p, "§cUżycie: /p panstwo create|add|join|leave|kick|delete|info|list");
+            return;
+        }
+        switch (a[1].toLowerCase(Locale.ROOT)) {
+            case "create", "new", "stworz" -> {
+                if (a.length < 3) {
+                    msg(p, "§cUżycie: /p panstwo create <nazwa>");
+                    return;
+                }
+                Town t = mayorTown(p);
+                if (t == null) return;
+                if (t.nation != null) {
+                    msg(p, "§cTwoje miasto już jest w państwie.");
+                    return;
+                }
+                String name = a[2];
+                if (!name.matches("[A-Za-z0-9_]{3,20}") || st.nations.containsKey(Store.k(name))) {
+                    msg(p, "§cNieprawidłowa lub zajęta nazwa.");
+                    return;
+                }
+                Nation n = new Nation();
+                n.name = name;
+                n.capital = t.name;
+                st.nations.put(Store.k(name), n);
+                t.nation = name;
+                st.save();
+                Bukkit.broadcastMessage(PREFIX + "§aPowstało państwo §e" + name + "§a (stolica: " + t.name + ")!");
+            }
+            case "add", "invite" -> {
+                Nation n = leaderNation(p);
+                if (n == null) return;
+                if (a.length < 3) {
+                    msg(p, "§cUżycie: /p panstwo add <miasto>");
+                    return;
+                }
+                Town t2 = st.towns.get(Store.k(a[2]));
+                if (t2 == null || t2.nation != null) {
+                    msg(p, "§cMiasto nie istnieje albo już jest w państwie.");
+                    return;
+                }
+                nationInvites.put(Store.k(t2.name), n.name);
+                msg(p, "§aZaproszenie wysłane do miasta " + t2.name + ".");
+                Player m = Bukkit.getPlayer(t2.mayor);
+                if (m != null) msg(m, "§aZaproszenie do państwa §e" + n.name + "§a. Wpisz §e/p panstwo join " + n.name);
+            }
+            case "join" -> {
+                if (a.length < 3) {
+                    msg(p, "§cUżycie: /p panstwo join <państwo>");
+                    return;
+                }
+                Town t = mayorTown(p);
+                if (t == null) return;
+                String inv = nationInvites.get(Store.k(t.name));
+                Nation n = st.nations.get(Store.k(a[2]));
+                if (n == null || inv == null || !inv.equalsIgnoreCase(n.name) || t.nation != null) {
+                    msg(p, "§cBrak zaproszenia do tego państwa.");
+                    return;
+                }
+                t.nation = n.name;
+                nationInvites.remove(Store.k(t.name));
+                st.save();
+                msg(p, "§aMiasto " + t.name + " dołączyło do państwa " + n.name + ".");
+            }
+            case "leave" -> {
+                Town t = mayorTown(p);
+                if (t == null) return;
+                Nation n = st.nationOf(t);
+                if (n == null) {
+                    msg(p, "§cTwoje miasto nie jest w państwie.");
+                    return;
+                }
+                if (n.capital.equalsIgnoreCase(t.name)) {
+                    msg(p, "§cStolica nie może wyjść. Użyj /p panstwo delete.");
+                    return;
+                }
+                plugin.war.cancelTown(Store.k(t.name));
+                t.nation = null;
+                st.save();
+                msg(p, "§aMiasto opuściło państwo " + n.name + ".");
+            }
+            case "kick" -> {
+                Nation n = leaderNation(p);
+                if (n == null) return;
+                if (a.length < 3) {
+                    msg(p, "§cUżycie: /p panstwo kick <miasto>");
+                    return;
+                }
+                Town t2 = st.towns.get(Store.k(a[2]));
+                if (t2 == null || t2.nation == null || !t2.nation.equalsIgnoreCase(n.name)
+                        || n.capital.equalsIgnoreCase(t2.name)) {
+                    msg(p, "§cNie można wyrzucić tego miasta.");
+                    return;
+                }
+                plugin.war.cancelTown(Store.k(t2.name));
+                t2.nation = null;
+                st.save();
+                msg(p, "§aMiasto " + t2.name + " wyrzucone z państwa.");
+            }
+            case "delete" -> {
+                Nation n = leaderNation(p);
+                if (n == null) return;
+                removeNation(n);
+                st.save();
+                Bukkit.broadcastMessage(PREFIX + "§cPaństwo " + n.name + " zostało rozwiązane.");
+            }
+            case "info" -> {
+                Nation n = a.length > 2 ? st.nations.get(Store.k(a[2])) : st.nationOf(st.townOf(p.getUniqueId()));
+                if (n == null) {
+                    msg(p, "§cNie znaleziono państwa.");
+                    return;
+                }
+                String towns = st.towns.values().stream()
+                        .filter(t -> t.nation != null && t.nation.equalsIgnoreCase(n.name))
+                        .map(t -> t.name).collect(Collectors.joining(", "));
+                p.sendMessage("§6===== Państwo " + n.name + " =====");
+                p.sendMessage("§eStolica: §f" + n.capital);
+                p.sendMessage("§eMiasta: §f" + towns);
+            }
+            case "list" -> {
+                if (st.nations.isEmpty()) {
+                    msg(p, "§7Brak państw.");
+                    return;
+                }
+                p.sendMessage("§6Państwa: §f" + st.nations.values().stream()
+                        .map(n -> n.name).collect(Collectors.joining(", ")));
+            }
+            default -> msg(p, "§cNieznana komenda. /p panstwo create|add|join|leave|kick|delete|info|list");
+        }
+    }
+
+    // ---------- wojna ----------
+
+    void war(Player p, String[] a) {
+        if (a.length < 2) {
+            msg(p, "§cUżycie: /p wojna wypowiedz <państwo> | poddaj <państwo> | lista");
+            return;
+        }
+        switch (a[1].toLowerCase(Locale.ROOT)) {
+            case "wypowiedz", "declare" -> {
+                Nation mine = leaderNation(p);
+                if (mine == null) return;
+                if (a.length < 3) {
+                    msg(p, "§cUżycie: /p wojna wypowiedz <państwo>");
+                    return;
+                }
+                Nation target = st.nations.get(Store.k(a[2]));
+                if (target == null) {
+                    msg(p, "§cNie ma takiego państwa.");
+                    return;
+                }
+                if (target.name.equalsIgnoreCase(mine.name)) {
+                    msg(p, "§cNie możesz wypowiedzieć wojny samemu sobie.");
+                    return;
+                }
+                if (st.atWar(mine.name, target.name)) {
+                    msg(p, "§cJuż jesteście w stanie wojny.");
+                    return;
+                }
+                st.wars.add(Store.warKey(mine.name, target.name));
+                st.save();
+                Bukkit.broadcastMessage(PREFIX + "§4Państwo " + mine.name + " wypowiedziało wojnę państwu "
+                        + target.name + "!");
+            }
+            case "poddaj", "peace" -> {
+                Nation mine = leaderNation(p);
+                if (mine == null) return;
+                if (a.length < 3) {
+                    msg(p, "§cUżycie: /p wojna poddaj <państwo>");
+                    return;
+                }
+                Nation target = st.nations.get(Store.k(a[2]));
+                if (target == null || !st.atWar(mine.name, target.name)) {
+                    msg(p, "§cNie jesteście w stanie wojny z takim państwem.");
+                    return;
+                }
+                plugin.war.cancelBetween(mine.name, target.name);
+                st.wars.remove(Store.warKey(mine.name, target.name));
+                st.save();
+                Bukkit.broadcastMessage(PREFIX + "§aPaństwo " + mine.name + " zakończyło wojnę z państwem "
+                        + target.name + ".");
+            }
+            case "lista", "list" -> {
+                if (st.wars.isEmpty()) {
+                    msg(p, "§7Brak trwających wojen.");
+                    return;
+                }
+                p.sendMessage("§6Wojny: §f" + st.wars.stream()
+                        .map(w -> w.replace("|", " vs ")).collect(Collectors.joining(", ")));
+            }
+            default -> msg(p, "§cUżycie: /p wojna wypowiedz <państwo> | poddaj <państwo> | lista");
+        }
+    }
+}
