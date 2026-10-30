@@ -1,0 +1,8 @@
+# Ile minut czerwony baner musi stać, żeby atakujący przejął chunk
+capture-minutes: 5
+
+# Czy nowy claim musi przylegać do istniejących chunków miasta
+require-adjacent: true
+
+# Maksymalna liczba chunków na miasto (0 = bez limitu)
+max-chunks: 0
