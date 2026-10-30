@@ -1,0 +1,14 @@
+name: AzuritePanstwa
+version: 1.0.0
+main: pl.azurite.panstwa.PanstwaPlugin
+api-version: '1.21'
+description: Działki, miasta, państwa i wojny - wszystko za darmo, bez Vault
+commands:
+  p:
+    description: Działki, miasta, państwa i wojny
+    usage: /p help
+    aliases: [panstwa]
+permissions:
+  panstwa.admin:
+    description: Omija ochronę działek
+    default: op
